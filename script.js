@@ -932,10 +932,6 @@ function createDeviceCard(device) {
                 <i class="fas fa-globe"></i>
                 <span>${device.country}, ${device.city}</span>
             </div>
-            <div class="detail-item">
-                <i class="fas fa-mobile-alt"></i>
-                <span>${device.os}</span>
-            </div>
         </div>
         <div class="device-capabilities">
             <span class="capability-badge ${device.wifi ? 'enabled' : ''}">
