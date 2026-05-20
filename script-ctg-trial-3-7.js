@@ -1465,7 +1465,7 @@ function populateFoxyCartFields() {
     
     const deviceCount = Object.keys(selectedDevices).length;
     const devicePrice = 300;
-    const billingCycle = '3 Day Trial';
+    const billingCycle = '3 Day Free Trial';
     
     // Calculate addon total per device
     let addonPricePerDevice = 0;
