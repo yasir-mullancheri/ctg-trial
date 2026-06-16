@@ -1077,7 +1077,7 @@ function updatePricingSummary() {
             couponNote = `
                 <div class="coupon-applied-notice">
                     <i class="fas fa-tag"></i>
-                    <strong>Coupon "${validatedCouponCode}" applied</strong> — ${couponTrialDays}-day free trial activated. $0 due today.
+                    <strong>Coupon "${validatedCouponCode}" applied</strong> — ${couponTrialDays}-day free trial activated.
                 </div>`;
         }
         orderDetails.innerHTML = `
@@ -1482,7 +1482,7 @@ function loadFinalSummary() {
                         <div class="item-name" style="color:var(--success-color,#22c55e);">
                             <i class="fas fa-tag"></i> Coupon: ${validatedCouponCode}
                         </div>
-                        <div class="item-description">${couponTrialDays}-day free trial — $0 due today</div>
+                        <div class="item-description">${couponTrialDays}-day free trial</div>
                     </div>
                     <div class="item-price" style="color:var(--success-color,#22c55e);">–$${totalAmount.toLocaleString()}</div>
                 </div>
