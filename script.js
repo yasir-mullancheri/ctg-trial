@@ -1,78 +1,43 @@
-// ========================================
-// CloudTest Go - Trial
-// ========================================
-
-// Coupon Validation URL
-const COUPON_CHECK_URL = 'https://silent-union-abf3.yasir-07a.workers.dev';
-
-// Generate unique session ID for this purchase
-const SESSION_ID = generateSessionId();
-
-// Global Variables
+// ===== GLOBAL VARIABLES =====
 let currentStep = 1;
+let completedSteps = [];
 let selectedDeviceTypes = [];
 let selectedCountries = [];
-let selectedCities = {};
+let selectedCities = [];
 let selectedDevices = {};
+let selectedPlan = 'yearly';
 let selectedAddons = [];
 let activeFilters = [];
 let totalAmount = 0;
+
+// Coupon state
 let couponValidated = false;
 let validatedCouponCode = '';
+let couponTrialDays = 0; // 3 or 7 depending on which coupon was applied
 
-// ========================================
-// Session Management
-// ========================================
+// ===== PRICING CONFIG =====
+const PLAN_PRICES = {
+    yearly: 1000,
+    monthly: 100
+};
 
-function generateSessionId() {
-    // Generate unique session ID using timestamp and random string
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 15);
-    const sessionId = `session_${timestamp}_${random}`;
-    
-    // Store in localStorage to track across page refreshes
-    localStorage.setItem('cloudtest_session_id', sessionId);
-    localStorage.setItem('cloudtest_session_timestamp', timestamp.toString());
-    
-    console.log('New session created:', sessionId);
-    return sessionId;
-}
-
-function clearPreviousCart() {
-    // Clear any previous cart items by adding empty parameter
-    // This tells FoxyCart to clear the cart before adding new items
-    let emptyField = document.getElementById('fc-empty-cart');
-    
-    if (!emptyField) {
-        emptyField = document.createElement('input');
-        emptyField.type = 'hidden';
-        emptyField.name = 'empty';
-        emptyField.id = 'fc-empty-cart';
-        emptyField.value = 'true';
-        document.getElementById('foxycart-hidden-fields').appendChild(emptyField);
-    } else {
-        emptyField.value = 'true';
+const ADDON_PRICES = {
+    yearly: {
+        automation: 200,
+        experience: 200,
+        performance: 200
+    },
+    monthly: {
+        automation: 25,
+        experience: 75,
+        performance: 75
     }
-    
-    console.log('Cart will be cleared before checkout');
-}
+};
 
-function addSessionIdToCart() {
-    // Add session ID as a custom field
-    let sessionField = document.getElementById('fc-session-id');
-    
-    if (!sessionField) {
-        sessionField = document.createElement('input');
-        sessionField.type = 'hidden';
-        sessionField.name = 'Session_ID';
-        sessionField.id = 'fc-session-id';
-        document.getElementById('foxycart-hidden-fields').appendChild(sessionField);
-    }
-    
-    sessionField.value = SESSION_ID;
-    console.log('Session ID added to cart:', SESSION_ID);
-}
+const BUNDLE_DISCOUNT = 50;
 
+// Coupon validation endpoint (same worker as trial forms)
+const COUPON_CHECK_URL = 'https://newtrial.yasir-07a.workers.dev/';
 
 // ===== DEVICE DATA =====
 const deviceData = [
@@ -423,1165 +388,994 @@ const deviceData = [
   { id: 345, name: "Google Pixel 3a XL", country: "US", city: "Riverside", type: "android", network: "WiFi", audio: false }
 ];
 
-// ========================================
-// Utility Functions
-// ========================================
 
+// ===== COUNTRY DATA =====
+const countryData = {
+    'Australia': ['Sydney'],
+    'Benin': ['Cotonou'],
+    'Brazil': ['São Paulo'],
+    'Canada': ['Toronto'],
+    'Czech Republic': ['Prague'],
+    'France': ['Paris'],
+    'Germany': ['Leverkusen'],
+    'Great Britain': ['London'],
+    'Hong Kong': ['Hong Kong'],
+    'India': ['Bangalore'],
+    'Indonesia': ['Jakarta'],
+    'Ireland': ['Dublin'],
+    'Japan': ['Tokyo'],
+    'Malaysia': ['Kuala Lumpur'],
+    'Netherlands': ['The Hague'],
+    'Nigeria': ['Lagos'],
+    'Philippines': ['Manila'],
+    'Singapore': ['Singapore'],
+    'South Africa': ['Johannesburg'],
+    'South Korea': ['Seoul'],
+    'Taiwan': ['Taipei'],
+    'Thailand': ['Bangkok'],
+    'Turkey': ['Istanbul'],
+    'United Arab Emirates': ['Dubai'],
+    'US': ['Atlanta', 'Chicago', 'Newark', 'Palo Alto', 'Riverside', 'Sunnyvale']
+};
+
+// ===== UTILITY FUNCTIONS =====
 function showLoading() {
-    document.getElementById('loadingOverlay').classList.add('show');
+    document.getElementById('loadingOverlay').style.display = 'flex';
 }
 
 function hideLoading() {
-    document.getElementById('loadingOverlay').classList.remove('show');
+    document.getElementById('loadingOverlay').style.display = 'none';
 }
 
-function showModal() {
-    document.getElementById('successModal').classList.add('show');
-}
-
-function closeModal() {
-    document.getElementById('successModal').classList.remove('show');
-}
-
-function showError(elementId, message) {
-    const errorElement = document.getElementById(elementId);
+function showError(fieldId, message) {
+    const field = document.getElementById(fieldId);
+    const errorElement = document.getElementById(`${fieldId}-error`);
+    if (field) field.classList.add('error');
     if (errorElement) {
         errorElement.textContent = message;
         errorElement.classList.add('show');
     }
 }
 
-function hideError(elementId) {
-    const errorElement = document.getElementById(elementId);
-    if (errorElement) {
-        errorElement.classList.remove('show');
+function clearError(fieldId) {
+    const field = document.getElementById(fieldId);
+    const errorElement = document.getElementById(`${fieldId}-error`);
+    if (field) field.classList.remove('error');
+    if (errorElement) errorElement.classList.remove('show');
+}
+
+function clearAllErrors() {
+    document.querySelectorAll('.error').forEach(el => el.classList.remove('error'));
+    document.querySelectorAll('.error-message.show').forEach(el => el.classList.remove('show'));
+}
+
+function validateEmail(email) {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email);
+}
+
+function validatePhone(phone) {
+    const cleanPhone = phone.replace(/[\s\-\(\)\+]/g, '');
+    return phone === '' || (/^\d{7,15}$/.test(cleanPhone));
+}
+
+// ===== NAVIGATION FUNCTIONS =====
+function updateProgressBar() {
+    const progress = (currentStep / 7) * 100;
+    document.getElementById('progressFill').style.width = `${progress}%`;
+
+    document.querySelectorAll('.step').forEach((step, index) => {
+        const stepNumber = index + 1;
+        step.classList.remove('active', 'completed');
+        if (stepNumber === currentStep) {
+            step.classList.add('active');
+        } else if (completedSteps.includes(stepNumber)) {
+            step.classList.add('completed');
+        }
+        step.style.cursor = (completedSteps.includes(stepNumber) && stepNumber !== currentStep) ? 'pointer' : 'default';
+    });
+}
+
+function markStepAsCompleted(stepNumber) {
+    if (!completedSteps.includes(stepNumber)) {
+        completedSteps.push(stepNumber);
     }
 }
 
-// ========================================
-// Navigation Functions
-// ========================================
-
-function updateProgressBar() {
-    const progressFill = document.getElementById('progressFill');
-    const steps = document.querySelectorAll('.step');
-    const percentage = (currentStep / 7) * 100;
-    
-    progressFill.style.width = percentage + '%';
-    
-    steps.forEach((step, index) => {
-        const stepNum = index + 1;
-        if (stepNum < currentStep) {
-            step.classList.add('completed');
-            step.classList.remove('active');
-        } else if (stepNum === currentStep) {
-            step.classList.add('active');
-            step.classList.remove('completed');
-        } else {
-            step.classList.remove('active', 'completed');
-        }
+function setupStepNavigation() {
+    document.querySelectorAll('.step').forEach((step, index) => {
+        const stepNumber = index + 1;
+        step.addEventListener('click', function() {
+            if (completedSteps.includes(stepNumber) && stepNumber < currentStep) {
+                goToStep(stepNumber);
+            }
+        });
     });
 }
 
 function nextStep(step) {
     if (validateCurrentStep()) {
-        currentStep = step;
-        updateStepVisibility();
-        updateProgressBar();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        markStepAsCompleted(currentStep);
+        showLoading();
+        setTimeout(() => {
+            hideLoading();
+            document.getElementById(`step${currentStep}`).classList.remove('active');
+            document.getElementById(`step${step}`).classList.add('active');
+            currentStep = step;
+            updateProgressBar();
+            switch(step) {
+                case 3: loadAvailableCountries(); break;
+                case 4: loadCitySelections(); break;
+                case 5: loadDevices(); break;
+                case 6:
+                    updatePricingSummary();
+                    updateAddonPricing();
+                    break;
+                case 7: loadFinalSummary(); break;
+            }
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }, 500);
     }
 }
 
+function goToStep(targetStep) {
+    if (!completedSteps.includes(targetStep) && targetStep >= currentStep) return;
+    clearAllErrors();
+    document.getElementById(`step${currentStep}`).classList.remove('active');
+    document.getElementById(`step${targetStep}`).classList.add('active');
+    currentStep = targetStep;
+    updateProgressBar();
+    switch(targetStep) {
+        case 3: loadAvailableCountries(); break;
+        case 4: loadCitySelections(); break;
+        case 5: loadDevices(); break;
+        case 6:
+            updatePricingSummary();
+            updateAddonPricing();
+            break;
+        case 7: loadFinalSummary(); break;
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 function prevStep(step) {
+    clearAllErrors();
+    document.getElementById(`step${currentStep}`).classList.remove('active');
+    document.getElementById(`step${step}`).classList.add('active');
     currentStep = step;
-    updateStepVisibility();
     updateProgressBar();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function updateStepVisibility() {
-    document.querySelectorAll('.form-section').forEach((section, index) => {
-        if (index + 1 === currentStep) {
-            section.classList.add('active');
-        } else {
-            section.classList.remove('active');
-        }
-    });
-    
-    // Update UI based on step
-    if (currentStep === 3) {
-        populateCountries();
-    } else if (currentStep === 4) {
-        populateCities();
-    } else if (currentStep === 5) {
-        populateDevices();
-    } else if (currentStep === 6) {
-        updatePricingSummary();
-    } else if (currentStep === 7) {
-        loadFinalSummary();
-        populateFoxyCartFields();
-    }
-}
-
 function validateCurrentStep() {
-    hideError('deviceType-error');
-    hideError('country-error');
-    hideError('city-error');
-    hideError('device-error');
-    
+    clearAllErrors();
     switch(currentStep) {
-        case 1:
-            return validateContactInfo();
-        case 2:
-            if (selectedDeviceTypes.length === 0) {
-                showError('deviceType-error', 'Please select at least one device type');
-                return false;
-            }
-            return true;
-        case 3:
-            if (selectedCountries.length === 0) {
-                showError('country-error', 'Please select at least one country');
-                return false;
-            }
-            return true;
-        case 4:
-            const hasSelectedCity = Object.values(selectedCities).some(cities => cities.length > 0);
-            if (!hasSelectedCity) {
-                showError('city-error', 'Please select at least one city');
-                return false;
-            }
-            return true;
-        case 5:
-            if (Object.keys(selectedDevices).length === 0) {
-                showError('device-error', 'Please select at least one device');
-                return false;
-            }
-            return true;
-        case 6:
-            return true;
-        default:
-            return true;
+        case 1: return validateStep1();
+        case 2: return validateStep2();
+        case 3: return validateStep3();
+        case 4: return validateStep4();
+        case 5: return validateStep5();
+        default: return true;
     }
 }
 
-function validateContactInfo() {
+// ===== STEP VALIDATION =====
+function validateStep1() {
     let isValid = true;
-    
     const fullName = document.getElementById('fullName').value.trim();
-    const email = document.getElementById('businessEmail').value.trim();
-    const phone = document.getElementById('phoneNumber').value.trim();
-    const org = document.getElementById('organizationName').value.trim();
-    
-    hideError('fullName-error');
-    hideError('businessEmail-error');
-    hideError('phoneNumber-error');
-    hideError('organizationName-error');
-    
-    if (!fullName) {
-        showError('fullName-error', 'Full name is required');
-        isValid = false;
-    }
-    
-    if (!email || !isValidEmail(email)) {
-        showError('businessEmail-error', 'Please enter a valid business email');
-        isValid = false;
-    }
-    
-    if (!phone) {
-        showError('phoneNumber-error', 'Phone number is required');
-        isValid = false;
-    }
-    
-    if (!org) {
-        showError('organizationName-error', 'Organization name is required');
-        isValid = false;
-    }
-    
+    const businessEmail = document.getElementById('businessEmail').value.trim();
+    const phoneNumber = document.getElementById('phoneNumber').value.trim();
+    const organizationName = document.getElementById('organizationName').value.trim();
+
+    if (!fullName) { showError('fullName', 'Full name is required'); isValid = false; }
+    if (!businessEmail) { showError('businessEmail', 'Business email is required'); isValid = false; }
+    else if (!validateEmail(businessEmail)) { showError('businessEmail', 'Please enter a valid email address'); isValid = false; }
+    if (!phoneNumber) { showError('phoneNumber', 'Phone number is required'); isValid = false; }
+    else if (!validatePhone(phoneNumber)) { showError('phoneNumber', 'Please enter a valid phone number'); isValid = false; }
+    if (!organizationName) { showError('organizationName', 'Organization name is required'); isValid = false; }
+
     return isValid;
 }
 
-function isValidEmail(email) {
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return re.test(email);
+function validateStep2() {
+    if (selectedDeviceTypes.length === 0) { showError('deviceType', 'Please select at least one device type'); return false; }
+    return true;
 }
 
-// ========================================
-// Step 2: Device Type Selection
-// ========================================
+function validateStep3() {
+    if (selectedCountries.length === 0) { showError('country', 'Please select at least one country'); return false; }
+    return true;
+}
 
+function validateStep4() {
+    if (selectedCities.length === 0) { showError('city', 'Please select at least one city'); return false; }
+    return true;
+}
+
+function validateStep5() {
+    if (Object.keys(selectedDevices).length === 0) { showError('device', 'Please select at least one device'); return false; }
+    return true;
+}
+
+// ===== DEVICE TYPE SELECTION =====
 function setupDeviceTypeSelection() {
     document.querySelectorAll('.selection-card[data-type]').forEach(card => {
-        card.addEventListener('click', function() {
-            const type = this.dataset.type;
+        card.addEventListener('click', function(e) {
+            if (e.target.type === 'checkbox') return;
             const checkbox = this.querySelector('input[type="checkbox"]');
-            
-            if (selectedDeviceTypes.includes(type)) {
-                selectedDeviceTypes = selectedDeviceTypes.filter(t => t !== type);
-                this.classList.remove('selected');
-                checkbox.checked = false;
-            } else {
-                selectedDeviceTypes.push(type);
-                this.classList.add('selected');
-                checkbox.checked = true;
-            }
-            
-            updateDeviceTypeButton();
+            const deviceType = this.dataset.type;
+            checkbox.checked = !checkbox.checked;
+            toggleDeviceType(deviceType, checkbox.checked);
+        });
+        card.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+            toggleDeviceType(card.dataset.type, this.checked);
         });
     });
+}
+
+function toggleDeviceType(type, isChecked) {
+    const card = document.querySelector(`[data-type="${type}"]`);
+    if (isChecked) {
+        if (!selectedDeviceTypes.includes(type)) selectedDeviceTypes.push(type);
+        card.classList.add('selected');
+    } else {
+        selectedDeviceTypes = selectedDeviceTypes.filter(t => t !== type);
+        card.classList.remove('selected');
+    }
+    updateDeviceTypeButton();
+    clearError('deviceType');
 }
 
 function updateDeviceTypeButton() {
-    const nextButton = document.getElementById('deviceTypeNext');
-    nextButton.disabled = selectedDeviceTypes.length === 0;
+    document.getElementById('deviceTypeNext').disabled = selectedDeviceTypes.length === 0;
 }
 
-// ========================================
-// Step 3: Country Selection
-// ========================================
+// ===== SELECT ALL COUNTRIES =====
+function setupSelectAllCountries() {
+    const selectAllCheckbox = document.getElementById('selectAllCountries');
+    const selectAllOption = document.querySelector('.select-all-option');
+    if (selectAllCheckbox && selectAllOption) {
+        selectAllOption.addEventListener('click', function(e) {
+            if (e.target.type !== 'checkbox') {
+                selectAllCheckbox.checked = !selectAllCheckbox.checked;
+                selectAllCheckbox.dispatchEvent(new Event('change'));
+            }
+        });
+        selectAllCheckbox.addEventListener('change', function() {
+            const isChecked = this.checked;
+            document.querySelectorAll('#countryGrid .selection-card').forEach(card => {
+                const checkbox = card.querySelector('input[type="checkbox"]');
+                const country = card.dataset.country;
+                if (checkbox && country) {
+                    checkbox.checked = isChecked;
+                    toggleCountry(country, isChecked);
+                }
+            });
+        });
+    }
+}
 
-function populateCountries() {
+// ===== COUNTRY SELECTION =====
+function loadAvailableCountries() {
+    const availableCountries = [...new Set(
+        deviceData.filter(device => selectedDeviceTypes.includes(device.type)).map(device => device.country)
+    )].sort();
+
     const countryGrid = document.getElementById('countryGrid');
-    const availableCountries = getAvailableCountries();
-    
     countryGrid.innerHTML = '';
-    
+
     availableCountries.forEach(country => {
-        const card = createCountryCard(country);
+        const deviceCount = deviceData.filter(d => d.country === country && selectedDeviceTypes.includes(d.type)).length;
+        const cityCount = countryData[country] ? countryData[country].length : 1;
+        const card = document.createElement('div');
+        card.className = 'selection-card';
+        card.dataset.country = country;
+        card.innerHTML = `
+            <div class="card-icon"><i class="fas fa-globe"></i></div>
+            <div class="card-content">
+                <h3>${country}</h3>
+                <p>${cityCount} ${cityCount === 1 ? 'city' : 'cities'}</p>
+                <span class="device-count">${deviceCount} devices</span>
+            </div>
+            <div class="card-checkbox">
+                <input type="checkbox" id="country-${country.replace(/\s+/g, '')}" value="${country}">
+            </div>
+        `;
+        card.addEventListener('click', function(e) {
+            if (e.target.type === 'checkbox') return;
+            const checkbox = this.querySelector('input[type="checkbox"]');
+            checkbox.checked = !checkbox.checked;
+            toggleCountry(country, checkbox.checked);
+        });
+        card.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+            toggleCountry(country, this.checked);
+        });
         countryGrid.appendChild(card);
     });
-    
+
+    setupCountrySearch();
+    setupSelectAllCountries();
+    selectedCountries = [];
     updateCountryButton();
+    const selectAllCheckbox = document.getElementById('selectAllCountries');
+    if (selectAllCheckbox) selectAllCheckbox.checked = false;
 }
 
-function getAvailableCountries() {
-    const countries = new Set();
-    deviceData.forEach(device => {
-        if (selectedDeviceTypes.includes(device.type)) {
-            countries.add(device.country);
-        }
-    });
-    return Array.from(countries).sort();
-}
-
-function createCountryCard(country) {
-    const card = document.createElement('div');
-    card.className = 'selection-card';
-    card.dataset.country = country;
-    
-    if (selectedCountries.includes(country)) {
+function toggleCountry(country, isChecked) {
+    const card = document.querySelector(`[data-country="${country}"]`);
+    if (isChecked) {
+        if (!selectedCountries.includes(country)) selectedCountries.push(country);
         card.classList.add('selected');
-    }
-    
-    card.innerHTML = `
-        <div class="card-icon">
-            <i class="fas fa-globe"></i>
-        </div>
-        <div class="card-content">
-            <h3>${country}</h3>
-            <span class="device-count">${getDeviceCountForCountry(country)} devices</span>
-        </div>
-        <div class="card-checkbox">
-            <input type="checkbox" ${selectedCountries.includes(country) ? 'checked' : ''}>
-        </div>
-    `;
-    
-    card.addEventListener('click', function() {
-        toggleCountrySelection(country, card);
-    });
-    
-    return card;
-}
-
-function getDeviceCountForCountry(country) {
-    return deviceData.filter(device => 
-        selectedDeviceTypes.includes(device.type) && device.country === country
-    ).length;
-}
-
-function toggleCountrySelection(country, card) {
-    const checkbox = card.querySelector('input[type="checkbox"]');
-    
-    if (selectedCountries.includes(country)) {
+    } else {
         selectedCountries = selectedCountries.filter(c => c !== country);
         card.classList.remove('selected');
-        checkbox.checked = false;
-        delete selectedCities[country];
-    } else {
-        selectedCountries.push(country);
-        card.classList.add('selected');
-        checkbox.checked = true;
     }
-    
     updateCountryButton();
+    clearError('country');
+    const selectAllCheckbox = document.getElementById('selectAllCountries');
+    if (selectAllCheckbox) {
+        const allCards = document.querySelectorAll('#countryGrid .selection-card');
+        const selectedCards = document.querySelectorAll('#countryGrid .selection-card.selected');
+        selectAllCheckbox.checked = allCards.length > 0 && selectedCards.length === allCards.length;
+    }
 }
 
 function updateCountryButton() {
-    const nextButton = document.getElementById('countryNext');
-    nextButton.disabled = selectedCountries.length === 0;
+    document.getElementById('countryNext').disabled = selectedCountries.length === 0;
 }
 
-// Search functionality for countries
-document.getElementById('countrySearch')?.addEventListener('input', function(e) {
-    const searchTerm = e.target.value.toLowerCase();
-    document.querySelectorAll('#countryGrid .selection-card').forEach(card => {
-        const countryName = card.dataset.country.toLowerCase();
-        if (countryName.includes(searchTerm)) {
-            card.style.display = 'flex';
-        } else {
-            card.style.display = 'none';
+function setupCountrySearch() {
+    const searchInput = document.getElementById('countrySearch');
+    searchInput.addEventListener('input', function() {
+        const searchTerm = this.value.toLowerCase();
+        document.querySelectorAll('#countryGrid .selection-card').forEach(card => {
+            const name = card.querySelector('h3').textContent.toLowerCase();
+            card.style.display = name.includes(searchTerm) ? 'flex' : 'none';
+        });
+    });
+}
+
+// ===== CITY SELECTION =====
+function loadCitySelections() {
+    const citySelections = document.getElementById('citySelections');
+    citySelections.innerHTML = '';
+    selectedCities = [];
+
+    const validCountries = selectedCountries.filter(country =>
+        deviceData.some(device => device.country === country && selectedDeviceTypes.includes(device.type))
+    );
+
+    validCountries.forEach(country => {
+        const availableCities = [...new Set(
+            deviceData.filter(device => device.country === country && selectedDeviceTypes.includes(device.type)).map(device => device.city)
+        )].sort();
+
+        if (availableCities.length > 0) {
+            const citySection = document.createElement('div');
+            citySection.className = 'city-section';
+            citySection.innerHTML = `
+                <h4>${country} Cities</h4>
+                <div class="selection-grid">
+                    ${availableCities.map(city => {
+                        const deviceCount = deviceData.filter(d => d.country === country && d.city === city && selectedDeviceTypes.includes(d.type)).length;
+                        return `
+                            <div class="selection-card" data-city="${city}" data-country="${country}">
+                                <div class="card-icon"><i class="fas fa-map-marker-alt"></i></div>
+                                <div class="card-content">
+                                    <h3>${city}</h3>
+                                    <p>${country}</p>
+                                    <span class="device-count">${deviceCount} devices</span>
+                                </div>
+                                <div class="card-checkbox">
+                                    <input type="checkbox" id="city-${city}-${country.replace(/\s+/g, '')}" value="${city}">
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+            citySection.querySelectorAll('.selection-card').forEach(card => {
+                card.addEventListener('click', function(e) {
+                    if (e.target.type === 'checkbox') return;
+                    const checkbox = this.querySelector('input[type="checkbox"]');
+                    checkbox.checked = !checkbox.checked;
+                    toggleCity(card.dataset.city, checkbox.checked);
+                });
+                card.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+                    toggleCity(card.dataset.city, this.checked);
+                });
+            });
+            citySelections.appendChild(citySection);
         }
     });
-});
 
-// Select all countries functionality
-document.getElementById('selectAllCountries')?.addEventListener('change', function(e) {
-    const availableCountries = getAvailableCountries();
-    const cards = document.querySelectorAll('#countryGrid .selection-card');
-    
-    if (e.target.checked) {
-        selectedCountries = [...availableCountries];
-        cards.forEach(card => {
-            card.classList.add('selected');
-            card.querySelector('input[type="checkbox"]').checked = true;
-        });
-    } else {
-        selectedCountries = [];
-        cards.forEach(card => {
-            card.classList.remove('selected');
-            card.querySelector('input[type="checkbox"]').checked = false;
-        });
-    }
-    
-    updateCountryButton();
-});
-
-// ========================================
-// Step 4: City Selection
-// ========================================
-
-function populateCities() {
-    const cityContainer = document.getElementById('citySelections');
-    cityContainer.innerHTML = '';
-    
-    selectedCountries.forEach(country => {
-        const citySection = createCitySection(country);
-        cityContainer.appendChild(citySection);
-    });
-    
     updateCityButton();
 }
 
-function createCitySection(country) {
-    const section = document.createElement('div');
-    section.className = 'country-city-section';
-    section.style.marginBottom = '2rem';
-    
-    const cities = getAvailableCities(country);
-    
-    const html = `
-        <h3 style="font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: var(--text-primary); display: flex; align-items: center; gap: 0.5rem;">
-            <i class="fas fa-map-marker-alt" style="color: var(--primary-color);"></i>
-            ${country}
-        </h3>
-        <div class="selection-grid" data-country="${country}">
-            ${cities.map(city => createCityCardHTML(country, city)).join('')}
-        </div>
-    `;
-    
-    section.innerHTML = html;
-    
-    // Add event listeners
-    section.querySelectorAll('.selection-card').forEach(card => {
-        card.addEventListener('click', function() {
-            const city = this.dataset.city;
-            const country = this.closest('[data-country]').dataset.country;
-            toggleCitySelection(country, city, card);
-        });
-    });
-    
-    return section;
-}
-
-function getAvailableCities(country) {
-    const cities = new Set();
-    deviceData.forEach(device => {
-        if (selectedDeviceTypes.includes(device.type) && device.country === country) {
-            cities.add(device.city);
-        }
-    });
-    return Array.from(cities).sort();
-}
-
-function createCityCardHTML(country, city) {
-    const isSelected = selectedCities[country]?.includes(city);
-    return `
-        <div class="selection-card ${isSelected ? 'selected' : ''}" data-city="${city}">
-            <div class="card-icon">
-                <i class="fas fa-city"></i>
-            </div>
-            <div class="card-content">
-                <h3>${city}</h3>
-                <span class="device-count">${getDeviceCountForCity(country, city)} devices</span>
-            </div>
-            <div class="card-checkbox">
-                <input type="checkbox" ${isSelected ? 'checked' : ''}>
-            </div>
-        </div>
-    `;
-}
-
-function getDeviceCountForCity(country, city) {
-    return deviceData.filter(device => 
-        selectedDeviceTypes.includes(device.type) && 
-        device.country === country && 
-        device.city === city
-    ).length;
-}
-
-function toggleCitySelection(country, city, card) {
-    if (!selectedCities[country]) {
-        selectedCities[country] = [];
-    }
-    
-    const checkbox = card.querySelector('input[type="checkbox"]');
-    
-    if (selectedCities[country].includes(city)) {
-        selectedCities[country] = selectedCities[country].filter(c => c !== city);
-        card.classList.remove('selected');
-        checkbox.checked = false;
-    } else {
-        selectedCities[country].push(city);
+function toggleCity(city, isChecked) {
+    const card = document.querySelector(`[data-city="${city}"]`);
+    if (isChecked) {
+        if (!selectedCities.includes(city)) selectedCities.push(city);
         card.classList.add('selected');
-        checkbox.checked = true;
+    } else {
+        selectedCities = selectedCities.filter(c => c !== city);
+        card.classList.remove('selected');
     }
-    
     updateCityButton();
+    clearError('city');
 }
 
 function updateCityButton() {
-    const nextButton = document.getElementById('cityNext');
-    const hasSelectedCity = Object.values(selectedCities).some(cities => cities.length > 0);
-    nextButton.disabled = !hasSelectedCity;
+    document.getElementById('cityNext').disabled = selectedCities.length === 0;
 }
-// ========================================
-// Step 5: Device Selection with Filters
-// ========================================
 
-function populateDevices() {
-    const deviceList = document.getElementById('deviceList');
-    const filteredDevices = getFilteredDevices();
-    
-    deviceList.innerHTML = '';
-    
-    if (filteredDevices.length === 0) {
-        deviceList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 2rem;">No devices match your criteria.</p>';
-        return;
-    }
-    
-    filteredDevices.forEach(device => {
-        const card = createDeviceCard(device);
-        deviceList.appendChild(card);
+// ===== DEVICE FILTERING =====
+function setupDeviceFilters() {
+    document.querySelectorAll('.filter-item').forEach(item => {
+        item.addEventListener('click', function() {
+            const checkbox = this.querySelector('input[type="checkbox"]');
+            const filterType = this.dataset.filter;
+            checkbox.checked = !checkbox.checked;
+            if (filterType === 'select-all') toggleAllFilters(checkbox.checked);
+            else toggleFilter(filterType, checkbox.checked);
+        });
+        item.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+            const filterType = item.dataset.filter;
+            if (filterType === 'select-all') toggleAllFilters(this.checked);
+            else toggleFilter(filterType, this.checked);
+        });
     });
-    
-    updateDeviceButton();
 }
 
-function getFilteredDevices() {
-    let devices = deviceData.filter(device => {
-        // Check device type
-        if (!selectedDeviceTypes.includes(device.type)) return false;
-        
-        // Check country and city
-        const countryMatch = selectedCountries.includes(device.country);
-        const cityMatch = selectedCities[device.country]?.includes(device.city);
-        
-        if (!countryMatch || !cityMatch) return false;
-        
-        // Check filters
-        if (activeFilters.includes('wifi') && !device.wifi) return false;
-        if (activeFilters.includes('sim') && !device.sim) return false;
-        if (activeFilters.includes('audio') && !device.audio) return false;
-        
-        return true;
-    });
-    
-    return devices;
-}
-
-function createDeviceCard(device) {
-    const card = document.createElement('div');
-    card.className = 'device-card';
-    card.dataset.deviceId = device.id;
-    
-    if (selectedDevices[device.id]) {
-        card.classList.add('selected');
-    }
-    
-    card.innerHTML = `
-        <div class="device-header">
-            <div class="device-info">
-                <h4>${device.name}</h4>
-                <span class="device-type-badge">${device.type.toUpperCase()}</span>
-            </div>
-            <div class="device-checkbox">
-                <input type="checkbox" ${selectedDevices[device.id] ? 'checked' : ''}>
-            </div>
-        </div>
-        <div class="device-details">
-            <div class="detail-item">
-                <i class="fas fa-globe"></i>
-                <span>${device.country}, ${device.city}</span>
-            </div>
-        </div>
-        <div class="device-capabilities">
-            <span class="capability-badge ${device.wifi ? 'enabled' : ''}">
-                <i class="fas fa-wifi"></i> WiFi ${device.wifi ? 'Enabled' : 'Disabled'}
-            </span>
-            <span class="capability-badge ${device.sim ? 'enabled' : ''}">
-                <i class="fas fa-sim-card"></i> SIM ${device.sim ? 'Enabled' : 'Disabled'}
-            </span>
-            <span class="capability-badge ${device.audio ? 'enabled' : ''}">
-                <i class="fas fa-volume-up"></i> Audio ${device.audio ? 'Enabled' : 'Disabled'}
-            </span>
-        </div>
-    `;
-    
-    card.addEventListener('click', function(e) {
-        if (!e.target.closest('.device-checkbox')) {
-            toggleDeviceSelection(device.id, card);
+function toggleAllFilters(selectAll) {
+    document.querySelectorAll('.filter-item:not(.select-all-filters)').forEach(item => {
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        const filterType = item.dataset.filter;
+        checkbox.checked = selectAll;
+        if (selectAll) {
+            if (!activeFilters.includes(filterType)) activeFilters.push(filterType);
+            item.classList.add('active');
+        } else {
+            activeFilters = activeFilters.filter(f => f !== filterType);
+            item.classList.remove('active');
         }
     });
-    
-    const checkbox = card.querySelector('input[type="checkbox"]');
-    checkbox.addEventListener('change', function(e) {
-        e.stopPropagation();
-        toggleDeviceSelection(device.id, card);
-    });
-    
-    return card;
+    loadDevices();
 }
 
-function toggleDeviceSelection(deviceId, card) {
-    const checkbox = card.querySelector('input[type="checkbox"]');
-    const device = deviceData.find(d => d.id === deviceId);
-    
-    if (selectedDevices[deviceId]) {
-        delete selectedDevices[deviceId];
-        card.classList.remove('selected');
-        checkbox.checked = false;
+function toggleFilter(filterType, isActive) {
+    const filterItem = document.querySelector(`[data-filter="${filterType}"]`);
+    if (isActive) {
+        if (!activeFilters.includes(filterType)) activeFilters.push(filterType);
+        filterItem.classList.add('active');
     } else {
-        selectedDevices[deviceId] = device;
-        card.classList.add('selected');
-        checkbox.checked = true;
+        activeFilters = activeFilters.filter(f => f !== filterType);
+        filterItem.classList.remove('active');
     }
-    
+    updateSelectAllFiltersState();
+    loadDevices();
+}
+
+function updateSelectAllFiltersState() {
+    const selectAllCheckbox = document.getElementById('selectAllFilters');
+    const allSelected = ['audio', 'wifi', 'sim'].every(f => activeFilters.includes(f));
+    if (selectAllCheckbox) selectAllCheckbox.checked = allSelected;
+}
+
+// ===== DEVICE SELECTION =====
+function loadDevices() {
+    let filteredDevices = deviceData.filter(device =>
+        selectedDeviceTypes.includes(device.type) &&
+        selectedCountries.includes(device.country) &&
+        selectedCities.includes(device.city)
+    );
+    if (activeFilters.includes('audio')) filteredDevices = filteredDevices.filter(d => d.audio);
+    if (activeFilters.includes('wifi')) filteredDevices = filteredDevices.filter(d => d.network === 'WiFi');
+    if (activeFilters.includes('sim')) filteredDevices = filteredDevices.filter(d => d.network === 'SIM');
+
+    const deviceList = document.getElementById('deviceList');
+    deviceList.innerHTML = '';
+
+    if (filteredDevices.length === 0) {
+        deviceList.innerHTML = `<div style="text-align:center;padding:3rem;color:var(--text-secondary);">
+            <i class="fas fa-search" style="font-size:3rem;margin-bottom:1rem;opacity:0.5;"></i>
+            <p>No devices match your current selection and filters.</p>
+        </div>`;
+        return;
+    }
+
+    filteredDevices.forEach(device => {
+        const isSelected = selectedDevices[device.id] === 1;
+        const deviceItem = document.createElement('div');
+        deviceItem.className = `device-item ${isSelected ? 'selected' : ''}`;
+        deviceItem.innerHTML = `
+            <input type="checkbox" class="device-checkbox" id="device-${device.id}" ${isSelected ? 'checked' : ''}>
+            <div class="device-info">
+                <h4>${device.name}</h4>
+                <p>${device.city}, ${device.country}</p>
+                <div class="device-tags">
+                    <span class="tag ${device.network.toLowerCase()}">${device.network}</span>
+                    <span class="tag ${device.audio ? 'audio' : ''}">${device.audio ? 'Audio' : 'No Audio'}</span>
+                </div>
+            </div>
+        `;
+        deviceItem.addEventListener('click', function(e) {
+            if (e.target.type === 'checkbox') return;
+            const checkbox = this.querySelector('input[type="checkbox"]');
+            checkbox.checked = !checkbox.checked;
+            toggleDevice(device.id, checkbox.checked);
+        });
+        deviceItem.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+            toggleDevice(device.id, this.checked);
+        });
+        deviceList.appendChild(deviceItem);
+    });
+
     updateDeviceButton();
+}
+
+function toggleDevice(deviceId, isSelected) {
+    const deviceItem = document.querySelector(`#device-${deviceId}`).closest('.device-item');
+    if (isSelected) {
+        selectedDevices[deviceId] = 1;
+        deviceItem.classList.add('selected');
+    } else {
+        delete selectedDevices[deviceId];
+        deviceItem.classList.remove('selected');
+    }
+    updateDeviceButton();
+    clearError('device');
+    // Coupon only valid for single-device selection
+    updateCouponToggleVisibility();
 }
 
 function updateDeviceButton() {
-    const nextButton = document.getElementById('deviceNext');
-    nextButton.disabled = Object.keys(selectedDevices).length === 0;
+    document.getElementById('deviceNext').disabled = Object.keys(selectedDevices).length === 0;
 }
 
-function setupDeviceFilters() {
-    document.querySelectorAll('.filter-item[data-filter]').forEach(item => {
-        const checkbox = item.querySelector('input[type="checkbox"]');
-        const filter = item.dataset.filter;
-        
-        checkbox?.addEventListener('change', function() {
-            if (filter === 'select-all') {
-                handleSelectAllFilters(this.checked);
-            } else {
-                handleIndividualFilter(filter, this.checked, item);
-            }
+// ===== PRICING & PLAN SELECTION =====
+function setupPlanSelection() {
+    document.querySelectorAll('.plan-card').forEach(card => {
+        card.addEventListener('click', function() {
+            selectPlan(this.dataset.plan);
         });
     });
 }
 
-function handleSelectAllFilters(checked) {
-    const filterItems = document.querySelectorAll('.filter-item:not([data-filter="select-all"])');
-    
-    if (checked) {
-        activeFilters = ['wifi', 'sim', 'audio'];
-        filterItems.forEach(item => {
-            item.classList.add('active');
-            item.querySelector('input[type="checkbox"]').checked = true;
-        });
+function selectPlan(plan) {
+    selectedPlan = plan;
+    document.querySelectorAll('.plan-card').forEach(card => card.classList.remove('selected'));
+    document.querySelector(`[data-plan="${plan}"]`).classList.add('selected');
+
+    if (plan === 'yearly') {
+        // Reset coupon and hide the section entirely
+        resetCoupon();
+        const couponSection = document.getElementById('couponSection');
+        if (couponSection) couponSection.style.display = 'none';
+        const couponToggle = document.getElementById('couponToggle');
+        if (couponToggle) couponToggle.checked = false;
+        const couponFieldWrapper = document.getElementById('couponFieldWrapper');
+        if (couponFieldWrapper) couponFieldWrapper.style.display = 'none';
     } else {
-        activeFilters = [];
-        filterItems.forEach(item => {
-            item.classList.remove('active');
-            item.querySelector('input[type="checkbox"]').checked = false;
-        });
+        // Monthly — show only if exactly 1 device selected
+        updateCouponToggleVisibility();
     }
-    
-    if (currentStep === 5) {
-        populateDevices();
-    }
+
+    updateAddonPricing();
+    updatePricingSummary();
 }
 
-function handleIndividualFilter(filter, checked, item) {
-    if (checked) {
-        if (!activeFilters.includes(filter)) {
-            activeFilters.push(filter);
-        }
-        item.classList.add('active');
+/**
+ * Show the coupon section ONLY when Monthly plan is selected AND exactly 1 device is selected.
+ * Called whenever plan changes or device selection changes.
+ */
+function updateCouponToggleVisibility() {
+    const couponSection = document.getElementById('couponSection');
+    if (!couponSection) return;
+
+    const deviceCount = Object.keys(selectedDevices).length;
+    const eligible = selectedPlan === 'monthly' && deviceCount === 1;
+
+    if (eligible) {
+        couponSection.style.display = 'block';
     } else {
-        activeFilters = activeFilters.filter(f => f !== filter);
-        item.classList.remove('active');
-        
-        // Uncheck select all
-        const selectAllCheckbox = document.querySelector('.filter-item[data-filter="select-all"] input[type="checkbox"]');
-        if (selectAllCheckbox) {
-            selectAllCheckbox.checked = false;
+        // Hide and reset if they add more devices or switch plan
+        couponSection.style.display = 'none';
+        const couponToggle = document.getElementById('couponToggle');
+        if (couponToggle && couponToggle.checked) {
+            couponToggle.checked = false;
+            const couponFieldWrapper = document.getElementById('couponFieldWrapper');
+            if (couponFieldWrapper) couponFieldWrapper.style.display = 'none';
+            couponSection.classList.remove('open');
         }
-    }
-    
-    if (currentStep === 5) {
-        populateDevices();
+        if (couponValidated) {
+            resetCoupon();
+            updatePricingSummary();
+        }
     }
 }
-
-// ========================================
-// Step 6: Pricing and Add-ons
-// ========================================
 
 function setupAddonSelection() {
-    document.querySelectorAll('.addon-card[data-addon]').forEach(card => {
-        card.addEventListener('click', function() {
-            const addon = this.dataset.addon;
+    document.querySelectorAll('.addon-card').forEach(card => {
+        card.addEventListener('click', function(e) {
+            if (e.target.type === 'checkbox') return;
             const checkbox = this.querySelector('input[type="checkbox"]');
-            
-            if (selectedAddons.includes(addon)) {
-                selectedAddons = selectedAddons.filter(a => a !== addon);
-                this.classList.remove('selected');
-                checkbox.checked = false;
-            } else {
-                selectedAddons.push(addon);
-                this.classList.add('selected');
-                checkbox.checked = true;
-            }
-            
-            updatePricingSummary();
+            const addon = this.dataset.addon;
+            checkbox.checked = !checkbox.checked;
+            toggleAddon(addon, checkbox.checked);
+        });
+        card.querySelector('input[type="checkbox"]').addEventListener('change', function() {
+            toggleAddon(card.dataset.addon, this.checked);
         });
     });
+}
+
+function toggleAddon(addon, isSelected) {
+    const card = document.querySelector(`[data-addon="${addon}"]`);
+    if (isSelected) {
+        if (!selectedAddons.includes(addon)) selectedAddons.push(addon);
+        card.classList.add('selected');
+    } else {
+        selectedAddons = selectedAddons.filter(a => a !== addon);
+        card.classList.remove('selected');
+    }
+    updatePricingSummary();
+}
+
+function updateAddonPricing() {
+    const automationPrice = document.getElementById('automation-price');
+    const experiencePrice = document.getElementById('experience-price');
+    const performancePrice = document.getElementById('performance-price');
+
+    if (selectedPlan === 'yearly') {
+        if (automationPrice) automationPrice.textContent = '$200/device/year';
+        if (experiencePrice) experiencePrice.textContent = '$200/device/year';
+        if (performancePrice) performancePrice.textContent = '$200/device/year';
+    } else {
+        if (automationPrice) automationPrice.textContent = '$25/device/month';
+        if (experiencePrice) experiencePrice.textContent = '$75/device/month';
+        if (performancePrice) performancePrice.textContent = '$75/device/month';
+    }
 }
 
 function calculateAddonTotal(deviceCount) {
     if (selectedAddons.length === 0) return 0;
-    
-    let addonPricePerDevice = 0;
-    if (selectedAddons.length === 1) {
-        addonPricePerDevice = 100;
-    } else if (selectedAddons.length === 2) {
-        addonPricePerDevice = 150;
-    } else if (selectedAddons.length === 3) {
-        addonPricePerDevice = 250;
-    }
-    
-    return deviceCount * addonPricePerDevice;
+    const prices = ADDON_PRICES[selectedPlan];
+    let sumPerDevice = selectedAddons.reduce((sum, addon) => sum + (prices[addon] || 0), 0);
+    if (selectedAddons.length === 3) sumPerDevice -= BUNDLE_DISCOUNT;
+    return deviceCount * sumPerDevice;
+}
+
+function getAddonPricePerDevice() {
+    if (selectedAddons.length === 0) return 0;
+    const prices = ADDON_PRICES[selectedPlan];
+    let sumPerDevice = selectedAddons.reduce((sum, addon) => sum + (prices[addon] || 0), 0);
+    if (selectedAddons.length === 3) sumPerDevice -= BUNDLE_DISCOUNT;
+    return sumPerDevice;
 }
 
 function updatePricingSummary() {
     const deviceCount = Object.keys(selectedDevices).length;
-    const devicePrice = 300;
-    
-    let deviceTotal = deviceCount * devicePrice;
-    let addonTotal = calculateAddonTotal(deviceCount);
-    
+    const devicePrice = PLAN_PRICES[selectedPlan];
+    const deviceTotal = deviceCount * devicePrice;
+    const addonTotal = calculateAddonTotal(deviceCount);
     totalAmount = deviceTotal + addonTotal;
-    
-    // Get device types and countries
-    const selectedDeviceIds = Object.keys(selectedDevices);
-    const actualDeviceTypes = [...new Set(
-        selectedDeviceIds.map(deviceId => {
-            const device = deviceData.find(d => d.id == deviceId);
-            return device ? device.type : null;
-        }).filter(type => type !== null)
-    )];
-    
-    const actualCountries = [...new Set(
-        selectedDeviceIds.map(deviceId => {
-            const device = deviceData.find(d => d.id == deviceId);
-            return device ? device.country : null;
-        }).filter(country => country !== null)
-    )];
-    
-    // Create addon description
+
+    const addonLabels = { automation: 'Automation+', experience: 'Experience+', performance: 'Performance+' };
     let addonDescription = '';
     if (selectedAddons.length > 0) {
-        const addonNames = {
-            'automation': 'Automation+',
-            'experience': 'Experience+', 
-            'performance': 'Performance+'
-        };
-        const selectedAddonNames = selectedAddons.map(addon => addonNames[addon]);
-        
-        let discountNote = '';
-        if (selectedAddons.length === 2) {
-            discountNote = ' (25% discount applied)';
-        } else if (selectedAddons.length === 3) {
-            discountNote = ' (special bundle pricing)';
-        }
-        
-        addonDescription = `<p><strong>${selectedAddonNames.join(', ')}</strong> add-ons × <strong>${deviceCount}</strong> devices = <strong>$ ${addonTotal.toLocaleString()}</strong>${discountNote}</p>`;
+        const selectedAddonNames = selectedAddons.map(a => addonLabels[a]);
+        const addonPricePerDevice = getAddonPricePerDevice();
+        let discountNote = selectedAddons.length === 3 ? ' <em>($50/device bundle discount applied)</em>' : '';
+        addonDescription = `<p><strong>${selectedAddonNames.join(', ')}</strong> × <strong>${deviceCount}</strong> devices @ <strong>$${addonPricePerDevice}/device</strong> = <strong>$${addonTotal.toLocaleString()}</strong>${discountNote}</p>`;
     }
-    
+
     const orderDetails = document.getElementById('orderDetails');
     if (orderDetails) {
+        let couponNote = '';
+        if (couponValidated) {
+            couponNote = `
+                <div class="coupon-applied-notice">
+                    <i class="fas fa-tag"></i>
+                    <strong>Coupon "${validatedCouponCode}" applied</strong> — ${couponTrialDays}-day free trial activated. $0 due today.
+                </div>`;
+        }
         orderDetails.innerHTML = `
-            <p><strong>Cloud<i>Test</i> Go - 1 Month Trial</strong> - <strong>${deviceCount}</strong> devices × <strong>$${devicePrice}</strong> = <strong>$ ${deviceTotal.toLocaleString()}</strong></p>
+            <p><strong>Cloud<i>Test</i> Go</strong> – <strong>${deviceCount}</strong> devices × <strong>$${devicePrice}</strong> = <strong>$${deviceTotal.toLocaleString()}</strong></p>
             ${addonDescription}
+            ${couponNote}
         `;
     }
-    
+
     const totalAmountElement = document.getElementById('totalAmount');
     if (totalAmountElement) {
-        totalAmountElement.textContent = `${totalAmount.toLocaleString()}`;
+        if (couponValidated) {
+            totalAmountElement.innerHTML = `<span style="text-decoration:line-through;opacity:0.5;font-size:0.85em;">$${totalAmount.toLocaleString()}</span> <span style="color:var(--success-color,#22c55e);">$0</span>`;
+        } else {
+            totalAmountElement.textContent = totalAmount.toLocaleString();
+        }
     }
 }
 
-// ========================================
-// Coupon Validation Functions
-// ========================================
+// ===== COUPON VALIDATION =====
 
-function setupCouponValidation() {
-    const applyCouponBtn = document.getElementById('applyCouponBtn');
-    const couponInput = document.getElementById('couponCode');
-    
-    if (applyCouponBtn) {
-        applyCouponBtn.addEventListener('click', validateCoupon);
-    }
-    
-    if (couponInput) {
-        couponInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                validateCoupon();
-            }
-        });
-        
-        couponInput.addEventListener('input', function() {
-            if (couponValidated) {
-                couponValidated = false;
-                validatedCouponCode = '';
-                hideCouponMessage();
-                couponInput.classList.remove('valid', 'invalid');
-            }
-        });
-    }
-}
+/**
+ * Set up the "Do you have a coupon code?" toggle and coupon input field.
+ * The toggle is only visible when Monthly plan is selected.
+ */
+function setupCouponToggle() {
+    const couponToggle = document.getElementById('couponToggle');
+    const couponFieldWrapper = document.getElementById('couponFieldWrapper');
+    const couponSection = document.getElementById('couponSection');
 
+    if (!couponToggle || !couponFieldWrapper) return;
 
-// final coupon field change
-
-function setupReceiptCouponValidation() {
-    const applyBtn = document.getElementById('receiptApplyCouponBtn');
-    const couponInput = document.getElementById('receiptCouponCode');
-
-    if (!applyBtn || !couponInput) return;
-
-    applyBtn.addEventListener('click', validateReceiptCoupon);
-
-    couponInput.addEventListener('keypress', e => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            validateReceiptCoupon();
+    couponToggle.addEventListener('change', function() {
+        if (this.checked) {
+            // Auto-select monthly when toggle is turned on
+            selectPlan('monthly');
+            couponFieldWrapper.style.display = 'block';
+            if (couponSection) couponSection.classList.add('open');
+        } else {
+            couponFieldWrapper.style.display = 'none';
+            if (couponSection) couponSection.classList.remove('open');
+            resetCoupon();
+            updatePricingSummary();
         }
     });
-}
 
-async function validateReceiptCoupon() {
+    // Apply button
+    const applyBtn = document.getElementById('couponApplyBtn');
+    if (applyBtn) applyBtn.addEventListener('click', validateCoupon);
 
-    const couponInput = document.getElementById('receiptCouponCode');
-    const messageBox = document.getElementById('receiptCouponMessage');
-    const badge = document.getElementById('couponAppliedBadge');
-
-    const email = document.getElementById('businessEmail').value.trim();
-    const couponCode = couponInput.value.trim().toUpperCase();
-
-    if (!email || !email.includes("@")) {
-        messageBox.innerHTML = "Please enter your email first.";
-        messageBox.className = "coupon-message error show";
-        return;
-    }
-
-    if (!couponCode) {
-        messageBox.innerHTML = "Please enter a coupon.";
-        messageBox.className = "coupon-message error show";
-        return;
-    }
-
-    const emailDomain = email.split("@")[1].toLowerCase();
-
-    messageBox.innerHTML = "Validating coupon…";
-    messageBox.className = "coupon-message show";
-
-    try {
-        const res = await fetch(COUPON_CHECK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ emailDomain, couponCode })
-        });
-
-        const result = await res.json();
-
-        if (result.allowed) {
-            messageBox.className = "coupon-message success show";
-            messageBox.innerHTML = result.message;
-
-            badge.style.display = "inline-block";
-
-            // Save coupon to FoxyCart hidden field
-            populateFoxyCartCouponField(couponCode);
-
-        } else {
-            messageBox.className = "coupon-message error show";
-            messageBox.innerHTML = result.message;
-
-            badge.style.display = "none";
-        }
-
-    } catch (err) {
-        messageBox.className = "coupon-message error show";
-        messageBox.innerHTML = "Error validating coupon.";
-        badge.style.display = "none";
-    }
-}
-// 
-
-// ===============================
-// Coupon Validation Functions
-// ===============================
-
-function setupCouponValidation() {
-    const applyCouponBtn = document.getElementById('applyCouponBtn');
-    const couponInput = document.getElementById('couponCode');
-
-    if (applyCouponBtn) {
-        applyCouponBtn.addEventListener('click', validateCoupon);
-    }
-
+    // Enter key in input
+    const couponInput = document.getElementById('couponCodeInput');
     if (couponInput) {
         couponInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                validateCoupon();
-            }
+            if (e.key === 'Enter') { e.preventDefault(); validateCoupon(); }
         });
-
-        couponInput.addEventListener('input', function () {
-            couponValidated = false;
-            validatedCouponCode = '';
-            couponInput.classList.remove('valid', 'invalid');
-            hideCouponMessage();
+        couponInput.addEventListener('input', function() {
+            if (couponValidated) {
+                resetCoupon();
+                updatePricingSummary();
+            }
         });
     }
 }
 
 async function validateCoupon() {
-    const couponInput = document.getElementById('couponCode');
-    const couponCode = couponInput.value.trim().toUpperCase();
+    const couponInput = document.getElementById('couponCodeInput');
+    const applyBtn = document.getElementById('couponApplyBtn');
+    const loadingEl = document.getElementById('couponValidationLoading');
 
+    const couponCode = couponInput.value.trim().toUpperCase();
     const email = document.getElementById('businessEmail').value.trim();
-    const couponLoading = document.getElementById('couponLoading');
-    const applyCouponBtn = document.getElementById('applyCouponBtn');
 
     if (!couponCode) {
-        showCouponMessage("Please enter a coupon code", "error");
+        showCouponMessage('Please enter a coupon code.', 'error');
+        return;
+    }
+    if (!email || !email.includes('@')) {
+        showCouponMessage('Please enter your business email in Step 1 first.', 'error');
         return;
     }
 
-    if (!email || !email.includes("@")) {
-        showCouponMessage("Please enter your email first", "error");
-        return;
-    }
+    const emailDomain = email.split('@')[1].toLowerCase();
 
-    const emailDomain = email.split("@")[1].toLowerCase().trim();
-
-    hideCouponMessage();
-    couponLoading.classList.add("show");
-    applyCouponBtn.disabled = true;
+    if (loadingEl) loadingEl.classList.add('show');
+    if (applyBtn) applyBtn.disabled = true;
     couponInput.disabled = true;
+    hideCouponMessage();
 
     try {
         const response = await fetch(COUPON_CHECK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                emailDomain: emailDomain,
-                couponCode: couponCode
-            })
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emailDomain, couponCode })
         });
-
         const result = await response.json();
 
-        couponLoading.classList.remove("show");
-        applyCouponBtn.disabled = false;
+        if (loadingEl) loadingEl.classList.remove('show');
+        if (applyBtn) applyBtn.disabled = false;
         couponInput.disabled = false;
 
         if (result.allowed) {
             couponValidated = true;
             validatedCouponCode = couponCode;
-            couponInput.classList.remove("invalid");
-            couponInput.classList.add("valid");
-            showCouponMessage(result.message, "success");
+
+            // trialDays comes from the worker — no coupon code logic in frontend
+            couponTrialDays = result.trialDays || 3;
+
+            couponInput.classList.add('valid');
+            couponInput.classList.remove('invalid');
+            showCouponMessage(result.message, 'success');
+
+            const badge = document.getElementById('couponAppliedBadge');
+            if (badge) badge.classList.add('show');
 
             populateFoxyCartCouponField(couponCode);
+            updatePricingSummary();
         } else {
             couponValidated = false;
-            validatedCouponCode = "";
-            couponInput.classList.remove("valid");
-            couponInput.classList.add("invalid");
-            showCouponMessage(result.message, "error");
+            validatedCouponCode = '';
+            couponTrialDays = 0;
+            couponInput.classList.add('invalid');
+            couponInput.classList.remove('valid');
+            showCouponMessage(result.message || 'Invalid or expired coupon code.', 'error');
+
+            const badge = document.getElementById('couponAppliedBadge');
+            if (badge) badge.classList.remove('show');
+            updatePricingSummary();
         }
-
     } catch (err) {
-        console.error("COUPON ERROR:", err);
-        couponLoading.classList.remove("show");
-        applyCouponBtn.disabled = false;
+        if (loadingEl) loadingEl.classList.remove('show');
+        if (applyBtn) applyBtn.disabled = false;
         couponInput.disabled = false;
-
-        showCouponMessage("Error validating coupon. Please try again.", "error");
+        showCouponMessage('Error validating coupon. Please try again.', 'error');
     }
 }
 
 function showCouponMessage(message, type) {
-    const couponMessage = document.getElementById('couponMessage');
-    const icon = type === 'success'
-        ? '<i class="fas fa-check-circle"></i>'
-        : '<i class="fas fa-exclamation-circle"></i>';
-
-    couponMessage.className = `coupon-message ${type} show`;
-    couponMessage.innerHTML = `${icon}<span>${message}</span>`;
+    const messageEl = document.getElementById('couponValidationMessage');
+    if (!messageEl) return;
+    const icon = type === 'success' ? '<i class="fas fa-check-circle"></i>' : '<i class="fas fa-exclamation-circle"></i>';
+    messageEl.className = `coupon-message ${type} show`;
+    messageEl.innerHTML = `${icon} <span>${message}</span>`;
 }
 
 function hideCouponMessage() {
-    const couponMessage = document.getElementById('couponMessage');
-    couponMessage.classList.remove("show");
+    const messageEl = document.getElementById('couponValidationMessage');
+    if (messageEl) messageEl.classList.remove('show');
+}
+
+function resetCoupon() {
+    couponValidated = false;
+    validatedCouponCode = '';
+    couponTrialDays = 0;
+    const couponInput = document.getElementById('couponCodeInput');
+    if (couponInput) {
+        couponInput.value = '';
+        couponInput.classList.remove('valid', 'invalid');
+        couponInput.disabled = false;
+    }
+    hideCouponMessage();
+    const badge = document.getElementById('couponAppliedBadge');
+    if (badge) badge.classList.remove('show');
+    const couponField = document.getElementById('fc-coupon-code');
+    if (couponField) couponField.value = '';
 }
 
 function populateFoxyCartCouponField(code) {
-    let couponField = document.getElementById("fc-coupon-code");
-
+    let couponField = document.getElementById('fc-coupon-code');
     if (!couponField) {
-        couponField = document.createElement("input");
-        couponField.type = "hidden";
-        couponField.id = "fc-coupon-code";
-        couponField.name = "coupon";
-        document.getElementById("foxycart-hidden-fields").appendChild(couponField);
+        couponField = document.createElement('input');
+        couponField.type = 'hidden';
+        couponField.id = 'fc-coupon-code';
+        couponField.name = 'coupon';
+        document.getElementById('foxycart-hidden-fields').appendChild(couponField);
     }
-
     couponField.value = code;
 }
 
-function proceedToPayment() {
-    if (validateCurrentStep()) {
-        nextStep(7);
-    }
-}
-// ========================================
-// Step 7: Final Summary and FoxyCart Integration
-// ========================================
-
-function loadFinalSummary() {
-    const deviceCount = Object.keys(selectedDevices).length;
-    const devicePrice = 300;
-    const deviceTotal = deviceCount * devicePrice;
-    const addonTotal = calculateAddonTotal(deviceCount);
-    const total = deviceTotal + addonTotal;
-    
-    // Customer Info
-    const fullName = document.getElementById('fullName').value;
-    const email = document.getElementById('businessEmail').value;
-    const phone = document.getElementById('phoneNumber').value;
-    const org = document.getElementById('organizationName').value;
-    
-    const customerInfo = document.getElementById('receiptCustomerInfo');
-    customerInfo.innerHTML = `
-        <p><strong>${fullName}</strong></p>
-        <p>${org}</p>
-        <p>${email}</p>
-        <p>${phone}</p>
-    `;
-    
-    // Order Items
-    const orderItems = document.getElementById('receiptOrderItems');
-    let itemsHTML = '';
-    
-    // Main product
-    itemsHTML += `
-        <div class="item-row">
-            <div class="item-info">
-                <div class="item-name">Cloud Test Go - 1 Month Trial</div>
-                <div class="item-details">${deviceCount} devices × $${devicePrice}</div>
-            </div>
-            <div class="item-price">$${deviceTotal.toLocaleString()}</div>
-        </div>
-    `;
-    
-    // Add-ons if any
-    if (selectedAddons.length > 0) {
-        const addonNames = {
-            'automation': 'Automation+',
-            'experience': 'Experience+', 
-            'performance': 'Performance+'
-        };
-        const selectedAddonNames = selectedAddons.map(addon => addonNames[addon]);
-        
-        itemsHTML += `
-            <div class="item-row">
-                <div class="item-info">
-                    <div class="item-name">Add-ons: ${selectedAddonNames.join(', ')}</div>
-                    <div class="item-details">${deviceCount} devices</div>
-                </div>
-                <div class="item-price">$${addonTotal.toLocaleString()}</div>
-            </div>
-        `;
-    }
-    
-    orderItems.innerHTML = itemsHTML;
-    
-    // Device Details
-    const deviceDetails = getSelectedDeviceDetails();
-    document.getElementById('receiptDeviceDetails').innerHTML = deviceDetails.join('<br>');
-    
-    // Total
-    document.getElementById('receiptTotal').textContent = total.toLocaleString();
-}
-
+// ===== HELPER =====
 function getSelectedDeviceDetails() {
-    const details = [];
-    Object.values(selectedDevices).forEach(device => {
-        details.push(`${device.name} (${device.type}) - ${device.country}, ${device.city}`);
-    });
-    return details;
+    return Object.keys(selectedDevices).map(deviceId => {
+        const device = deviceData.find(d => d.id == deviceId);
+        return device ? `${device.name} | ${device.country} | ${device.city}` : '';
+    }).filter(d => d !== '');
 }
 
+// ===== SESSION MANAGEMENT =====
+function generateSessionId() {
+    return `${Date.now()}${Math.floor(Math.random() * 10000)}`;
+}
+
+function addEmptyCartParameter() {
+    const sessionId = generateSessionId();
+
+    const existingEmptyField = document.querySelector('input[name="empty"]');
+    if (existingEmptyField) existingEmptyField.remove();
+
+    const emptyCartField = document.createElement('input');
+    emptyCartField.type = 'hidden';
+    emptyCartField.name = 'empty';
+    emptyCartField.value = 'true';
+
+    const existingSessionField = document.querySelector('input[name="session_id"]');
+    if (existingSessionField) existingSessionField.remove();
+
+    const sessionField = document.createElement('input');
+    sessionField.type = 'hidden';
+    sessionField.name = 'session_id';
+    sessionField.value = sessionId;
+
+    const hiddenFieldsContainer = document.getElementById('foxycart-hidden-fields');
+    hiddenFieldsContainer.appendChild(emptyCartField);
+    hiddenFieldsContainer.appendChild(sessionField);
+}
+
+// ===== FOXYCART INTEGRATION =====
 function populateFoxyCartFields() {
-    // Clear previous cart and add new session ID
-    clearPreviousCart();
-    addSessionIdToCart();
-    
     const deviceCount = Object.keys(selectedDevices).length;
-    const devicePrice = 300;
-    const billingCycle = '1 Month Trial';
-    
-    // Calculate addon total per device
-    let addonPricePerDevice = 0;
-    if (selectedAddons.length === 1) {
-        addonPricePerDevice = 100;
-    } else if (selectedAddons.length === 2) {
-        addonPricePerDevice = 150;
-    } else if (selectedAddons.length === 3) {
-        addonPricePerDevice = 250;
-    }
-    
-    // Main product details
-    const mainProductName = 'Cloud Test Go - 1 Month Trial (per device)';
-    const productCode = `cloudtestgo-trial-monthly-${deviceCount}dev`;
-    
-    // Populate main product fields
+    const addonPricePerDevice = getAddonPricePerDevice();
+
+    // When a coupon is validated on monthly: treat as a one-time free trial
+    // — no subscription, billing cycle label changes, price is $0
+    const isCouponTrial = couponValidated && selectedPlan === 'monthly';
+    const trialLabel = `${couponTrialDays} Day Free Trial`;
+    const billingCycle = isCouponTrial ? trialLabel
+                       : selectedPlan === 'monthly' ? 'monthly'
+                       : 'yearly';
+
+    const effectiveDevicePrice = isCouponTrial ? 0 : PLAN_PRICES[selectedPlan];
+    const effectiveAddonPrice  = isCouponTrial ? 0 : addonPricePerDevice;
+
+    const mainProductName = isCouponTrial
+        ? `Cloud Test Go - ${trialLabel} (per device)`
+        : `Cloud Test Go - ${billingCycle.charAt(0).toUpperCase() + billingCycle.slice(1)} Plan (per device)`;
+    const productCode = isCouponTrial
+        ? `cloudtestgo-${couponTrialDays}day-trial-${deviceCount}dev`
+        : `cloudtestgo-${billingCycle}-${deviceCount}dev`;
+
     document.getElementById('fc-name').value = mainProductName;
-    document.getElementById('fc-price').value = devicePrice.toFixed(2);
+    document.getElementById('fc-price').value = effectiveDevicePrice.toFixed(2);
     document.getElementById('fc-code').value = productCode;
     document.getElementById('fc-quantity').value = deviceCount.toString();
-    
-    // Update quantity constraints
+
     document.querySelector('input[name="quantity_min"]').value = deviceCount.toString();
     document.querySelector('input[name="quantity_max"]').value = deviceCount.toString();
-    
-    // One-time payment (not subscription)
-    document.getElementById('fc-sub-frequency').value = '';
-    
-    // Customer information
+
+    // No recurring subscription when it's a coupon-driven trial
+    document.getElementById('fc-sub-frequency').value = isCouponTrial ? '' : (selectedPlan === 'monthly' ? '1m' : '1y');
+
     const fullName = document.getElementById('fullName').value;
     const businessEmail = document.getElementById('businessEmail').value;
     const phoneNumber = document.getElementById('phoneNumber').value;
     const organizationName = document.getElementById('organizationName').value;
-    
     const nameParts = fullName.trim().split(' ');
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
-    
-    // Pre-populate checkout fields
+
     document.getElementById('fc-customer-first-name').value = firstName;
     document.getElementById('fc-customer-last-name').value = lastName;
     document.getElementById('fc-customer-email').value = businessEmail;
     document.getElementById('fc-customer-phone').value = phoneNumber;
     document.getElementById('fc-customer-company').value = organizationName;
-    
-    // IMPORTANT: Also save as custom field for tracking
-    document.getElementById('fc-company-name').value = organizationName;
-    
-    // Billing address fields
     document.getElementById('fc-billing-first-name').value = firstName;
     document.getElementById('fc-billing-last-name').value = lastName;
     document.getElementById('fc-billing-company').value = organizationName;
     document.getElementById('fc-billing-phone').value = phoneNumber;
-    
-    // Get actual countries and cities from selected devices
+
     const selectedDeviceIds = Object.keys(selectedDevices);
-    const actualCountries = [...new Set(
-        selectedDeviceIds.map(deviceId => {
-            const device = deviceData.find(d => d.id == deviceId);
-            return device ? device.country : null;
-        }).filter(country => country !== null)
-    )];
-    
-    const actualCities = [...new Set(
-        selectedDeviceIds.map(deviceId => {
-            const device = deviceData.find(d => d.id == deviceId);
-            return device ? device.city : null;
-        }).filter(city => city !== null)
-    )];
-    
-    // Order metadata
+    const actualCountries = [...new Set(selectedDeviceIds.map(id => { const d = deviceData.find(x => x.id == id); return d ? d.country : null; }).filter(Boolean))];
+    const actualCities = [...new Set(selectedDeviceIds.map(id => { const d = deviceData.find(x => x.id == id); return d ? d.city : null; }).filter(Boolean))];
+
     document.getElementById('fc-device-types').value = selectedDeviceTypes.join(', ');
     document.getElementById('fc-selected-countries').value = actualCountries.join(', ');
     document.getElementById('fc-selected-cities').value = actualCities.join(', ');
     document.getElementById('fc-device-count').value = deviceCount.toString();
     document.getElementById('fc-billing-cycle').value = billingCycle;
-    
-    // Addon names
-    const addonNames = {
-        'automation': 'Automation+',
-        'experience': 'Experience+', 
-        'performance': 'Performance+'
-    };
-    const selectedAddonNames = selectedAddons.map(addon => addonNames[addon]);
+
+    const addonLabels = { automation: 'Automation+', experience: 'Experience+', performance: 'Performance+' };
+    const selectedAddonNames = selectedAddons.map(a => addonLabels[a]);
     document.getElementById('fc-selected-addons').value = selectedAddonNames.join(', ');
-    
     document.getElementById('fc-active-filters').value = activeFilters.join(', ');
-    
-    // Device details
-    const deviceDetails = getSelectedDeviceDetails();
-    document.getElementById('fc-selected-devices-json').value = deviceDetails.join('; ');
-    
-    // Add-ons as second product (if any selected)
+    document.getElementById('fc-selected-devices-json').value = getSelectedDeviceDetails().join('; ');
+
     if (selectedAddons.length > 0) {
-        const selectedAddonNamesForProduct = selectedAddons.map(addon => {
-            const names = {
-                'automation': 'Automation+',
-                'experience': 'Experience+', 
-                'performance': 'Performance+'
-            };
-            return names[addon];
-        });
-        
-        const addonProductName = `Add-ons: ${selectedAddonNamesForProduct.join(', ')} - 1 Month Trial (per device)`;
-        const addonCode = `addons-${selectedAddons.join('-')}-trial-monthly`;
-        
+        const addonProductName = isCouponTrial
+            ? `Add-ons: ${selectedAddonNames.join(', ')} - ${trialLabel} (per device)`
+            : `Add-ons: ${selectedAddonNames.join(', ')} - ${billingCycle.charAt(0).toUpperCase() + billingCycle.slice(1)} (per device)`;
+        const addonCode = isCouponTrial
+            ? `addons-${selectedAddons.join('-')}-${couponTrialDays}day-trial`
+            : `addons-${selectedAddons.join('-')}-${billingCycle}`;
         document.getElementById('fc-addon-name').value = addonProductName;
-        document.getElementById('fc-addon-price').value = addonPricePerDevice.toFixed(2);
+        document.getElementById('fc-addon-price').value = effectiveAddonPrice.toFixed(2);
         document.getElementById('fc-addon-code').value = addonCode;
         document.getElementById('fc-addon-quantity').value = deviceCount.toString();
-        
-        // Update addon quantity constraints
         document.querySelector('input[name="2:quantity_min"]').value = deviceCount.toString();
         document.querySelector('input[name="2:quantity_max"]').value = deviceCount.toString();
     } else {
-        // Clear addon fields if no addons selected
         document.getElementById('fc-addon-name').value = '';
         document.getElementById('fc-addon-price').value = '';
         document.getElementById('fc-addon-code').value = '';
@@ -1589,65 +1383,178 @@ function populateFoxyCartFields() {
     }
 }
 
-// ========================================
-// Enter Key Navigation
-// ========================================
+// ===== PAYMENT & COMPLETION =====
+function proceedToPayment() {
+    nextStep(7);
+}
 
+function generateReceiptNumber() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const randomNum = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    return `CTG-${year}${month}${day}-${randomNum}`;
+}
+
+function loadFinalSummary() {
+    const deviceCount = Object.keys(selectedDevices).length;
+    const devicePrice = PLAN_PRICES[selectedPlan];
+    const deviceTotal = deviceCount * devicePrice;
+    const addonTotal = calculateAddonTotal(deviceCount);
+    const addonPricePerDevice = getAddonPricePerDevice();
+
+    const selectedDeviceIds = Object.keys(selectedDevices);
+    const actualDeviceTypes = [...new Set(selectedDeviceIds.map(id => { const d = deviceData.find(x => x.id == id); return d ? d.type : null; }).filter(Boolean))];
+    const actualCountries = [...new Set(selectedDeviceIds.map(id => { const d = deviceData.find(x => x.id == id); return d ? d.country : null; }).filter(Boolean))];
+
+    const receiptNumberElement = document.getElementById('receiptNumber');
+    if (receiptNumberElement) receiptNumberElement.textContent = generateReceiptNumber();
+
+    // Customer info
+    const customerInfo = document.getElementById('receiptCustomerInfo');
+    if (customerInfo) {
+        customerInfo.innerHTML = `
+            <div class="customer-info-grid">
+                <div class="info-item"><div class="info-label">Full Name</div><div class="info-value">${document.getElementById('fullName').value}</div></div>
+                <div class="info-item"><div class="info-label">Email</div><div class="info-value">${document.getElementById('businessEmail').value}</div></div>
+                <div class="info-item"><div class="info-label">Phone</div><div class="info-value">${document.getElementById('phoneNumber').value}</div></div>
+                <div class="info-item"><div class="info-label">Organization</div><div class="info-value">${document.getElementById('organizationName').value}</div></div>
+            </div>
+        `;
+    }
+
+    // Order items
+    const orderItems = document.getElementById('receiptOrderItems');
+    if (orderItems) {
+        let itemsHTML = '';
+
+        const isCouponTrial = couponValidated && selectedPlan === 'monthly';
+        const planLabel = isCouponTrial ? `${couponTrialDays} Day Free Trial`
+                        : selectedPlan === 'yearly' ? 'Yearly' : 'Monthly';
+
+        const displayDevicePrice = isCouponTrial
+            ? `<span style="text-decoration:line-through;opacity:0.5;">$${deviceTotal.toLocaleString()}</span> <span style="color:var(--success-color,#22c55e);">$0</span>`
+            : `$${deviceTotal.toLocaleString()}`;
+
+        itemsHTML += `
+            <div class="item-row">
+                <div class="item-info">
+                    <div class="item-name">Cloud Test Go – ${planLabel}</div>
+                    <div class="item-description">${deviceCount} ${deviceCount === 1 ? 'device' : 'devices'} × $${devicePrice.toLocaleString()}/device</div>
+                    <div class="item-details">
+                        <div class="item-detail">${actualDeviceTypes.join(', ')}</div>
+                        <div class="item-detail">${actualCountries.length} ${actualCountries.length === 1 ? 'country' : 'countries'}</div>
+                    </div>
+                </div>
+                <div class="item-price">${displayDevicePrice}</div>
+            </div>
+        `;
+
+        if (selectedAddons.length > 0) {
+            const addonLabels = { automation: 'Automation+', experience: 'Experience+', performance: 'Performance+' };
+            const selectedAddonNames = selectedAddons.map(a => addonLabels[a]);
+            let discountNote = selectedAddons.length === 3 ? `<div class="item-detail" style="color:var(--success-color,#22c55e);">$50/device bundle discount applied</div>` : '';
+            const displayAddonPrice = isCouponTrial
+                ? `<span style="text-decoration:line-through;opacity:0.5;">$${addonTotal.toLocaleString()}</span> <span style="color:var(--success-color,#22c55e);">$0</span>`
+                : `$${addonTotal.toLocaleString()}`;
+
+            itemsHTML += `
+                <div class="item-row">
+                    <div class="item-info">
+                        <div class="item-name">Add-ons: ${selectedAddonNames.join(', ')}</div>
+                        <div class="item-description">${deviceCount} ${deviceCount === 1 ? 'device' : 'devices'} × $${addonPricePerDevice}/device – ${planLabel}</div>
+                        <div class="item-details">
+                            ${selectedAddonNames.map(name => `<div class="item-detail">${name}</div>`).join('')}
+                            ${discountNote}
+                        </div>
+                    </div>
+                    <div class="item-price">${displayAddonPrice}</div>
+                </div>
+            `;
+        }
+
+        // Coupon applied notice
+        if (isCouponTrial) {
+            itemsHTML += `
+                <div class="item-row coupon-row" style="background:rgba(34,197,94,0.08);border-radius:8px;padding:0.75rem 1rem;">
+                    <div class="item-info">
+                        <div class="item-name" style="color:var(--success-color,#22c55e);">
+                            <i class="fas fa-tag"></i> Coupon: ${validatedCouponCode}
+                        </div>
+                        <div class="item-description">${couponTrialDays}-day free trial — $0 due today</div>
+                    </div>
+                    <div class="item-price" style="color:var(--success-color,#22c55e);">–$${totalAmount.toLocaleString()}</div>
+                </div>
+            `;
+        }
+
+        orderItems.innerHTML = itemsHTML;
+    }
+
+    // Device details
+    const deviceDetails = getSelectedDeviceDetails();
+    const deviceDetailsContainer = document.getElementById('receiptDeviceDetails');
+    if (deviceDetailsContainer) {
+        deviceDetailsContainer.innerHTML = deviceDetails.map((detail, i) => `
+            <div class="device-detail-item">
+                <div class="device-number">${i + 1}</div>
+                <div class="device-detail-info">${detail}</div>
+            </div>
+        `).join('');
+    }
+
+    // Total
+    const totalElement = document.getElementById('receiptTotal');
+    if (totalElement) {
+        if (couponValidated && selectedPlan === 'monthly') {
+            totalElement.innerHTML = `<span style="text-decoration:line-through;opacity:0.5;font-size:0.85em;">$${totalAmount.toLocaleString()}</span> <span style="color:var(--success-color,#22c55e);font-size:1.1em;">$0</span>`;
+        } else {
+            totalElement.textContent = totalAmount.toLocaleString();
+        }
+    }
+
+    populateFoxyCartFields();
+}
+
+// ===== ENTER KEY NAVIGATION =====
 function setupEnterKeyNavigation() {
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            // Don't trigger on textareas or if in a modal
-            if (e.target.tagName === 'TEXTAREA' || 
-                document.querySelector('.modal-overlay.show')) {
-                return;
-            }
-            
-            // Check if we're on a step with a next button
-            const activeSection = document.querySelector('.form-section.active');
-            if (!activeSection) return;
-            
-            const nextButton = activeSection.querySelector('.btn-primary:not(:disabled)');
-            if (nextButton) {
-                e.preventDefault();
-                nextButton.click();
+        if (e.key === 'Enter' && currentStep < 7) {
+            e.preventDefault();
+            const focusedElement = document.activeElement;
+            if (focusedElement && focusedElement.tagName === 'INPUT') {
+                if (currentStep === 6) proceedToPayment();
+                else if (validateCurrentStep()) nextStep(currentStep + 1);
             }
         }
     });
 }
 
-// ========================================
-// Form Submission Handler
-// ========================================
-
-document.getElementById('foxycart-form')?.addEventListener('submit', function(e) {
-    // The form will submit to FoxyCart
-    // We can add any last-minute validation or tracking here
-    console.log('Form submitting to FoxyCart...');
-    
-    // Show loading
-    showLoading();
-    
-    // FoxyCart will handle the actual redirect
-});
-
-// ========================================
-// Initialization
-// ========================================
-
+// ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', function() {
-    // Initialize progress bar
     updateProgressBar();
-    
-    // Setup event listeners
     setupDeviceTypeSelection();
     setupDeviceFilters();
+    setupPlanSelection();
     setupAddonSelection();
-    setupCouponValidation();
+    setupCouponToggle();
+    selectPlan('yearly');
     setupEnterKeyNavigation();
-    setupReceiptCouponValidation();
-    
-    // Set default plan (monthly/trial)
-    updatePricingSummary();
-    
-    console.log('CloudTest Go form initialized successfully');
+
+    const form = document.getElementById('foxycart-form');
+    if (form) {
+        form.addEventListener('submit', function(e) {
+            if (currentStep < 7) { e.preventDefault(); return false; }
+            addEmptyCartParameter();
+            populateFoxyCartFields();
+            return true;
+        });
+    }
+
+    console.log('CloudTest Go purchase form initialized successfully!');
 });
+
+window.nextStep = nextStep;
+window.prevStep = prevStep;
+window.proceedToPayment = proceedToPayment;
